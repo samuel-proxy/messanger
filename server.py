@@ -1,28 +1,32 @@
-from fastapi import FastAPI, WebSocket
-import uvicorn
+import asyncio
+import websockets
 import os
 
-app = FastAPI()
-clients = []
+PORT = int(os.environ.get("PORT", 10000))
+clients = set()
 
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    clients.append(ws)
+async def handler(websocket):
+    clients.add(websocket)
+    print("Client connected")
 
     try:
-        while True:
-            data = await ws.receive_text()
-            print("Received:", data)
+        async for message in websocket:
+            print("Received:", message)
 
             # send to everyone EXCEPT sender
-            for c in clients:
-                if c != ws:
-                    await c.send_text(data)
+            for client in clients:
+                if client != websocket:
+                    await client.send(message)
 
     except:
-        clients.remove(ws)
+        pass
+    finally:
+        clients.remove(websocket)
+        print("Client disconnected")
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+async def main():
+    async with websockets.serve(handler, "0.0.0.0", PORT):
+        print("Server running on port", PORT)
+        await asyncio.Future()
+
+asyncio.run(main())
