@@ -1,59 +1,49 @@
-import socket
-import threading
+import asyncio
+import websockets
 import json
 
-HOST = "0.0.0.0"
-PORT = 5000
+connected_users = {}  # phone -> websocket
 
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.bind((HOST, PORT))
-server.listen()
+async def handler(websocket):
 
-print("Server started...")
-
-connected_users = {}  # phone -> socket
-
-
-def handle_client(client):
     phone = None
 
     try:
-        while True:
-            msg = client.recv(1024).decode()
-            if not msg:
-                break
+        async for message in websocket:
+            data = json.loads(message)
 
-            data = json.loads(msg)
-
-            # 1. Register user
+            # REGISTER USER
             if data["type"] == "register":
                 phone = data["phone"]
-                connected_users[phone] = client
+                connected_users[phone] = websocket
                 print(f"{phone} connected")
 
-            # 2. Send message
+            # SEND MESSAGE
             elif data["type"] == "message":
-                to = data["to"]
-                message = data["message"]
                 sender = data["from"]
+                receiver = data["to"]
+                msg = data["message"]
 
-                if to in connected_users:
-                    connected_users[to].send(json.dumps({
+                if receiver in connected_users:
+                    await connected_users[receiver].send(json.dumps({
                         "from": sender,
-                        "message": message
-                    }).encode())
+                        "message": msg
+                    }))
                 else:
-                    print("User offline:", to)
+                    print("User offline:", receiver)
 
     except:
         pass
 
+    # cleanup on disconnect
     if phone and phone in connected_users:
         del connected_users[phone]
+        print(f"{phone} disconnected")
 
-    client.close()
 
+async def main():
+    print("WebSocket server running on port 5000...")
+    async with websockets.serve(handler, "0.0.0.0", 5000):
+        await asyncio.Future()
 
-while True:
-    client, addr = server.accept()
-    threading.Thread(target=handle_client, args=(client,)).start()
+asyncio.run(main())
