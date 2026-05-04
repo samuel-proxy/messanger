@@ -11,17 +11,10 @@ async def handler(websocket):
     try:
         async for message in websocket:
             data = json.loads(message)
-
-            if data["type"] == "register":
-                phone = data["phone"]
-                connected_users[phone] = websocket
-                print(phone, "connected")
-
-            elif data["type"] == "message":
-                sender = data["from"]
-                receiver = data["to"]
-                msg = data["message"]
-
+    if data["type"] == "register":
+    user_id = data["user_id"]
+    connected_users[user_id] = websocket
+    
                 if receiver in connected_users:
                     await connected_users[receiver].send(json.dumps({
                         "type": "message",
