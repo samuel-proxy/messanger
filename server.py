@@ -7,7 +7,7 @@ from datetime import datetime
 connected_users = {}  # user_id -> websocket
 
 def now():
-    return datetime.utcnow().strftime("%H:%M")
+    return datetime.utcnow().strftime("%H:%M:%S")
 
 async def safe_send(ws, data):
     try:
@@ -15,11 +15,17 @@ async def safe_send(ws, data):
     except:
         pass
 
+async def unregister(user_id):
+    if user_id in connected_users:
+        del connected_users[user_id]
+        print(f"❌ {user_id} removed from connected users")
+
 async def handler(websocket):
     user_id = None
 
     try:
         async for message in websocket:
+
             try:
                 data = json.loads(message)
             except:
@@ -31,11 +37,16 @@ async def handler(websocket):
             if msg_type == "register":
                 user_id = str(data.get("user_id"))
 
-                if not user_id:
+                print("REGISTER RAW:", data)
+
+                if not user_id or user_id == "null":
+                    print("❌ Invalid register attempt")
                     continue
 
                 connected_users[user_id] = websocket
-                print(f"{user_id} connected")
+
+                print(f"✅ {user_id} connected")
+                print("ONLINE USERS:", list(connected_users.keys()))
 
                 await safe_send(websocket, {
                     "type": "status",
@@ -53,10 +64,12 @@ async def handler(websocket):
 
                 timestamp = now()
 
-                print(f"{sender} -> {receiver}: {msg}")
+                print(f"📩 {sender} -> {receiver}: {msg}")
 
-                if receiver in connected_users:
-                    await safe_send(connected_users[receiver], {
+                receiver_ws = connected_users.get(receiver)
+
+                if receiver_ws:
+                    await safe_send(receiver_ws, {
                         "type": "message",
                         "from": sender,
                         "message": msg,
@@ -69,6 +82,8 @@ async def handler(websocket):
                         "time": timestamp
                     })
                 else:
+                    print("❌ Receiver offline:", receiver)
+
                     await safe_send(websocket, {
                         "type": "status",
                         "status": "offline"
@@ -79,8 +94,10 @@ async def handler(websocket):
                 receiver = str(data.get("to_user_id"))
                 sender = str(data.get("from_user_id"))
 
-                if receiver in connected_users:
-                    await safe_send(connected_users[receiver], {
+                receiver_ws = connected_users.get(receiver)
+
+                if receiver_ws:
+                    await safe_send(receiver_ws, {
                         "type": "typing",
                         "from": sender
                     })
@@ -89,16 +106,22 @@ async def handler(websocket):
         print("Error:", e)
 
     finally:
-        if user_id and user_id in connected_users:
-            del connected_users[user_id]
-            print(f"{user_id} disconnected")
+        if user_id:
+            await unregister(user_id)
 
 
 PORT = int(os.environ.get("PORT", 5000))
 
 async def main():
-    print("Running on port", PORT)
-    async with websockets.serve(handler, "0.0.0.0", PORT):
+    print("🚀 Server running on port", PORT)
+
+    async with websockets.serve(
+        handler,
+        "0.0.0.0",
+        PORT,
+        ping_interval=20,
+        ping_timeout=20
+    ):
         await asyncio.Future()
 
 asyncio.run(main())
