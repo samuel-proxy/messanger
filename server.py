@@ -2,104 +2,51 @@ import asyncio
 import websockets
 import json
 import os
-import urllib.request
-import urllib.parse
 from datetime import datetime
 
-# ---------------- STATE ----------------
+connected_users = {}
 
-connected_users = {}   # user_id -> websocket
-debug_clients = set()  # websockets that receive debug logs
+# ---------------- TIME ----------------
 
-PHP_BASE_URL = "https://onana.free.nf"  # CHANGE THIS
-
-# ---------------- LOGGING ----------------
-
-def log(msg):
-    print("[SERVER]", msg)
-
-async def debug_broadcast(message):
-    """Send logs to frontend console"""
-    dead = set()
-
-    for ws in debug_clients:
-        try:
-            await ws.send(json.dumps({
-                "type": "debug",
-                "message": message
-            }))
-        except:
-            dead.add(ws)
-
-    debug_clients.difference_update(dead)
-
-# ---------------- PHP STATUS UPDATE ----------------
-
-def update_status(user_id, status):
-    try:
-        data = urllib.parse.urlencode({
-            "user_id": user_id,
-            "status": status
-        }).encode()
-
-        req = urllib.request.Request(
-            f"{PHP_BASE_URL}/set_status.php",
-            data=data
-        )
-
-        urllib.request.urlopen(req, timeout=2)
-
-        log(f"DB UPDATE: {user_id} -> {status}")
-
-    except Exception as e:
-        log(f"PHP ERROR: {e}")
+def now():
+    return datetime.utcnow().strftime("%H:%M:%S")
 
 # ---------------- SAFE SEND ----------------
 
 async def safe_send(ws, data):
     try:
         await ws.send(json.dumps(data))
-    except Exception as e:
-        log(f"SEND FAIL: {e}")
+    except:
+        pass
 
-# ---------------- CLEAN DISCONNECT ----------------
+# ---------------- HTTP HANDLER (CRITICAL FIX) ----------------
 
-def remove_user(user_id):
-    if user_id in connected_users:
-        del connected_users[user_id]
-        update_status(user_id, "offline")
-        log(f"OFFLINE: {user_id}")
+async def process_request(path, request_headers):
+    """
+    Handles HTTP requests like HEAD/GET from Render.
+    Prevents WebSocket handshake crashes.
+    """
+    return (
+        200,
+        [("Content-Type", "text/plain")],
+        b"OK"
+    )
 
 # ---------------- HANDLER ----------------
 
 async def handler(websocket):
 
     user_id = None
-    is_debug = False
-
-    await debug_broadcast("New connection attempt")
 
     try:
         async for message in websocket:
 
-            # ---------------- PARSE ----------------
             try:
                 data = json.loads(message)
             except:
-                await debug_broadcast("Invalid JSON received")
                 continue
 
             msg_type = data.get("type")
-
-            # ---------------- DEBUG MODE ----------------
-            if msg_type == "debug":
-                debug_clients.add(websocket)
-                is_debug = True
-                await safe_send(websocket, {
-                    "type": "debug",
-                    "message": "Debug mode enabled"
-                })
-                continue
 
             # ---------------- REGISTER ----------------
             if msg_type == "register":
@@ -107,17 +54,12 @@ async def handler(websocket):
                 user_id = str(data.get("user_id"))
 
                 if not user_id or user_id == "null":
-                    await debug_broadcast("Invalid user_id on register")
                     continue
 
                 connected_users[user_id] = websocket
 
-                log(f"CONNECTED: {user_id}")
-                log(f"ONLINE USERS: {list(connected_users.keys())}")
-
-                await debug_broadcast(f"{user_id} connected")
-
-                update_status(user_id, "online")
+                print(f"✅ CONNECTED: {user_id}")
+                print("ONLINE USERS:", list(connected_users.keys()))
 
                 await safe_send(websocket, {
                     "type": "status",
@@ -131,7 +73,7 @@ async def handler(websocket):
                 receiver = str(data.get("to_user_id"))
                 msg = data.get("message")
 
-                await debug_broadcast(f"MSG {sender} -> {receiver}: {msg}")
+                print(f"{sender} -> {receiver}: {msg}")
 
                 receiver_ws = connected_users.get(receiver)
 
@@ -139,14 +81,14 @@ async def handler(websocket):
                     await safe_send(receiver_ws, {
                         "type": "message",
                         "from": sender,
-                        "message": msg
+                        "message": msg,
+                        "time": now()
                     })
 
                     await safe_send(websocket, {
                         "type": "status",
                         "status": "delivered"
                     })
-
                 else:
                     await safe_send(websocket, {
                         "type": "status",
@@ -166,30 +108,28 @@ async def handler(websocket):
                     })
 
     except Exception as e:
-        log(f"ERROR: {e}")
-        await debug_broadcast(f"Server error: {e}")
+        print("ERROR:", e)
 
     finally:
-        if user_id:
-            remove_user(user_id)
-            await debug_broadcast(f"{user_id} disconnected")
+        if user_id and user_id in connected_users:
+            del connected_users[user_id]
+            print(f"❌ DISCONNECTED: {user_id}")
+            print("ONLINE USERS:", list(connected_users.keys()))
 
-
-# ---------------- START SERVER ----------------
+# ---------------- SERVER START ----------------
 
 PORT = int(os.environ.get("PORT", 5000))
 
 async def main():
-    log(f"Starting WebSocket server on {PORT}")
+    print(f"🚀 Running on port {PORT}")
 
     async with websockets.serve(
         handler,
         "0.0.0.0",
         PORT,
+        process_request=process_request,  # 🔥 FIX HERE
         ping_interval=20,
-        ping_timeout=20,
-        max_size=2**20,
-        compression=None
+        ping_timeout=20
     ):
         await asyncio.Future()
 
