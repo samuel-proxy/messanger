@@ -6,40 +6,27 @@ from datetime import datetime
 
 connected_users = {}
 
-# ---------------- TIME ----------------
 def now():
-    return datetime.utcnow().strftime("%H:%M:%S")
+    return datetime.utcnow().isoformat()
 
-# ---------------- SAFE SEND ----------------
 async def safe_send(ws, data):
     try:
         await ws.send(json.dumps(data))
-    except:
-        pass
+    except Exception as e:
+        print("SEND ERROR:", e)
 
-# ---------------- CRITICAL: HANDLE RENDER HEALTH CHECK ----------------
+# ✅ FIXED: Render-safe HTTP handler
 async def process_request(path, request_headers):
-    method = request_headers.get("Method", "")
+    if request_headers.get("Upgrade", "").lower() != "websocket":
+        return (200, [("Content-Type", "text/plain")], b"OK")
+    return None
 
-    # Allow normal GET upgrade (WebSocket)
-    if request_headers.get("Upgrade", "").lower() == "websocket":
-        return None  # continue WebSocket handshake
-
-    # Respond to Render HTTP checks (HEAD / GET)
-    return (
-        200,
-        [("Content-Type", "text/plain")],
-        b"WebSocket server running"
-    )
-
-# ---------------- HANDLER ----------------
+# ---------------- MAIN HANDLER ----------------
 async def handler(websocket):
-
     user_id = None
 
     try:
         async for message in websocket:
-
             try:
                 data = json.loads(message)
             except:
@@ -47,7 +34,7 @@ async def handler(websocket):
 
             msg_type = data.get("type")
 
-            # ---------------- REGISTER ----------------
+            # -------- REGISTER --------
             if msg_type == "register":
                 user_id = str(data.get("user_id"))
 
@@ -61,38 +48,49 @@ async def handler(websocket):
 
                 await safe_send(websocket, {
                     "type": "status",
-                    "status": "connected"
+                    "code": "connected"
                 })
 
-            # ---------------- MESSAGE ----------------
+            # -------- MESSAGE --------
             elif msg_type == "message":
                 sender = str(data.get("from_user_id"))
                 receiver = str(data.get("to_user_id"))
                 msg = data.get("message")
 
-                print(f"{sender} -> {receiver}: {msg}")
+                print(f"📨 {sender} -> {receiver}: {msg}")
+                print("CURRENT USERS:", list(connected_users.keys()))
 
                 receiver_ws = connected_users.get(receiver)
 
                 if receiver_ws:
+                    print(f"✅ DELIVERING to {receiver}")
+
+                    # SEND TO RECEIVER
                     await safe_send(receiver_ws, {
                         "type": "message",
-                        "from": sender,
+                        "from_user_id": sender,
+                        "to_user_id": receiver,
                         "message": msg,
-                        "time": now()
+                        "timestamp": now()
                     })
 
+                    # CONFIRM DELIVERY TO SENDER
                     await safe_send(websocket, {
                         "type": "status",
-                        "status": "delivered"
+                        "code": "delivered",
+                        "timestamp": now()
                     })
+
                 else:
+                    print(f"❌ {receiver} OFFLINE")
+
                     await safe_send(websocket, {
                         "type": "status",
-                        "status": "offline"
+                        "code": "offline",
+                        "timestamp": now()
                     })
 
-            # ---------------- TYPING ----------------
+            # -------- TYPING --------
             elif msg_type == "typing":
                 receiver = str(data.get("to_user_id"))
                 sender = str(data.get("from_user_id"))
@@ -100,8 +98,14 @@ async def handler(websocket):
                 if receiver in connected_users:
                     await safe_send(connected_users[receiver], {
                         "type": "typing",
-                        "from": sender
+                        "from_user_id": sender
                     })
+
+            # -------- PING --------
+            elif msg_type == "ping":
+                await safe_send(websocket, {
+                    "type": "pong"
+                })
 
     except Exception as e:
         print("ERROR:", e)
