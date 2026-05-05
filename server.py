@@ -1,23 +1,19 @@
-# server.py
 import asyncio
 import websockets
 import json
 import os
+from datetime import datetime
 
 connected_users = {}  # user_id -> websocket
 
-async def broadcast_presence(user_id, online):
-    for uid, ws in connected_users.items():
-        if uid != user_id:
-            try:
-                await ws.send(json.dumps({
-                    "type": "presence",
-                    "user_id": user_id,
-                    "online": online
-                }))
-            except:
-                pass
+def now():
+    return datetime.utcnow().strftime("%H:%M")
 
+async def safe_send(ws, data):
+    try:
+        await ws.send(json.dumps(data))
+    except:
+        pass
 
 async def handler(websocket):
     user_id = None
@@ -41,7 +37,10 @@ async def handler(websocket):
                 connected_users[user_id] = websocket
                 print(f"{user_id} connected")
 
-                await broadcast_presence(user_id, True)
+                await safe_send(websocket, {
+                    "type": "status",
+                    "status": "connected"
+                })
 
             # ---------------- MESSAGE ----------------
             elif msg_type == "message":
@@ -52,31 +51,28 @@ async def handler(websocket):
                 if not sender or not receiver or not msg:
                     continue
 
+                timestamp = now()
+
                 print(f"{sender} -> {receiver}: {msg}")
 
                 if receiver in connected_users:
-                    try:
-                        await connected_users[receiver].send(json.dumps({
-                            "type": "message",
-                            "from": sender,
-                            "message": msg
-                        }))
+                    await safe_send(connected_users[receiver], {
+                        "type": "message",
+                        "from": sender,
+                        "message": msg,
+                        "time": timestamp
+                    })
 
-                        await websocket.send(json.dumps({
-                            "type": "status",
-                            "status": "delivered"
-                        }))
-
-                    except:
-                        await websocket.send(json.dumps({
-                            "type": "status",
-                            "status": "failed"
-                        }))
+                    await safe_send(websocket, {
+                        "type": "status",
+                        "status": "delivered",
+                        "time": timestamp
+                    })
                 else:
-                    await websocket.send(json.dumps({
+                    await safe_send(websocket, {
                         "type": "status",
                         "status": "offline"
-                    }))
+                    })
 
             # ---------------- TYPING ----------------
             elif msg_type == "typing":
@@ -84,10 +80,10 @@ async def handler(websocket):
                 sender = str(data.get("from_user_id"))
 
                 if receiver in connected_users:
-                    await connected_users[receiver].send(json.dumps({
+                    await safe_send(connected_users[receiver], {
                         "type": "typing",
                         "from": sender
-                    }))
+                    })
 
     except Exception as e:
         print("Error:", e)
@@ -96,13 +92,12 @@ async def handler(websocket):
         if user_id and user_id in connected_users:
             del connected_users[user_id]
             print(f"{user_id} disconnected")
-            await broadcast_presence(user_id, False)
 
 
 PORT = int(os.environ.get("PORT", 5000))
 
 async def main():
-    print("Server running on", PORT)
+    print("Running on port", PORT)
     async with websockets.serve(handler, "0.0.0.0", PORT):
         await asyncio.Future()
 
