@@ -138,17 +138,17 @@ async def handler(websocket, path):
 
 PORT = int(os.environ.get("PORT", 10000))
 
-print(f"🚀 Starting server on 0.0.0.0:{PORT}")
+async def main():
+    print(f"🚀 Starting server on 0.0.0.0:{PORT}")
+    async with websockets.serve(
+        handler,
+        "0.0.0.0",
+        PORT,
+        ping_interval=20,
+        ping_timeout=20
+    ):
+        print("✅ Server is listening")
+        await asyncio.Future()
 
-# OLD STYLE: No async with, no process_request — works everywhere
-start_server = websockets.serve(
-    handler,
-    "0.0.0.0",
-    PORT,
-    ping_interval=20,
-    ping_timeout=20
-)
-
-asyncio.get_event_loop().run_until_complete(start_server)
-print("✅ Server is listening")
-asyncio.get_event_loop().run_forever()
+if __name__ == "__main__":
+    asyncio.run(main())
