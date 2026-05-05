@@ -7,33 +7,32 @@ from datetime import datetime
 connected_users = {}
 
 # ---------------- TIME ----------------
-
 def now():
     return datetime.utcnow().strftime("%H:%M:%S")
 
 # ---------------- SAFE SEND ----------------
-
 async def safe_send(ws, data):
     try:
         await ws.send(json.dumps(data))
     except:
         pass
 
-# ---------------- HTTP HANDLER (CRITICAL FIX) ----------------
-
+# ---------------- CRITICAL: HANDLE RENDER HEALTH CHECK ----------------
 async def process_request(path, request_headers):
-    """
-    Handles HTTP requests like HEAD/GET from Render.
-    Prevents WebSocket handshake crashes.
-    """
+    method = request_headers.get("Method", "")
+
+    # Allow normal GET upgrade (WebSocket)
+    if request_headers.get("Upgrade", "").lower() == "websocket":
+        return None  # continue WebSocket handshake
+
+    # Respond to Render HTTP checks (HEAD / GET)
     return (
         200,
         [("Content-Type", "text/plain")],
-        b"OK"
+        b"WebSocket server running"
     )
 
 # ---------------- HANDLER ----------------
-
 async def handler(websocket):
 
     user_id = None
@@ -50,7 +49,6 @@ async def handler(websocket):
 
             # ---------------- REGISTER ----------------
             if msg_type == "register":
-
                 user_id = str(data.get("user_id"))
 
                 if not user_id or user_id == "null":
@@ -68,7 +66,6 @@ async def handler(websocket):
 
             # ---------------- MESSAGE ----------------
             elif msg_type == "message":
-
                 sender = str(data.get("from_user_id"))
                 receiver = str(data.get("to_user_id"))
                 msg = data.get("message")
@@ -97,7 +94,6 @@ async def handler(websocket):
 
             # ---------------- TYPING ----------------
             elif msg_type == "typing":
-
                 receiver = str(data.get("to_user_id"))
                 sender = str(data.get("from_user_id"))
 
@@ -116,8 +112,7 @@ async def handler(websocket):
             print(f"❌ DISCONNECTED: {user_id}")
             print("ONLINE USERS:", list(connected_users.keys()))
 
-# ---------------- SERVER START ----------------
-
+# ---------------- START ----------------
 PORT = int(os.environ.get("PORT", 5000))
 
 async def main():
@@ -127,7 +122,7 @@ async def main():
         handler,
         "0.0.0.0",
         PORT,
-        process_request=process_request,  # 🔥 FIX HERE
+        process_request=process_request,
         ping_interval=20,
         ping_timeout=20
     ):
