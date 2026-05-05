@@ -2,12 +2,19 @@ import asyncio
 import websockets
 import json
 import os
+import requests
 from datetime import datetime
 
 connected_users = {}  # user_id -> websocket
 
+PHP_BASE_URL = "https://onana.free.nf"  # 🔥 CHANGE THIS
+
+# ---------------- TIME ----------------
+
 def now():
     return datetime.utcnow().strftime("%H:%M:%S")
+
+# ---------------- SAFE SEND ----------------
 
 async def safe_send(ws, data):
     try:
@@ -15,20 +22,45 @@ async def safe_send(ws, data):
     except Exception as e:
         print("Send error:", e)
 
-async def unregister(user_id):
+# ---------------- PHP STATUS UPDATE ----------------
+
+def set_status(user_id, status):
+    try:
+        requests.post(
+            f"{PHP_BASE_URL}/set_status.php",
+            data={
+                "user_id": user_id,
+                "status": status
+            },
+            timeout=3
+        )
+        print(f"DB STATUS UPDATE: {user_id} -> {status}")
+    except Exception as e:
+        print("PHP status error:", e)
+
+# ---------------- UNREGISTER USER ----------------
+
+def mark_offline(user_id):
+    if not user_id:
+        return
+
     if user_id in connected_users:
         del connected_users[user_id]
-        print(f"❌ {user_id} disconnected")
+
+    set_status(user_id, "offline")
+    print(f"❌ {user_id} OFFLINE")
+
+# ---------------- MAIN HANDLER ----------------
 
 async def handler(websocket):
     user_id = None
 
     try:
         async for message in websocket:
+
             try:
                 data = json.loads(message)
-            except Exception as e:
-                print("JSON parse error:", e)
+            except:
                 continue
 
             msg_type = data.get("type")
@@ -37,15 +69,17 @@ async def handler(websocket):
             if msg_type == "register":
                 user_id = str(data.get("user_id"))
 
-                print("REGISTER RAW:", data)
-
                 if not user_id or user_id == "null":
-                    print("❌ Invalid user ID on register")
+                    print("❌ Invalid user_id")
                     continue
 
                 connected_users[user_id] = websocket
-                print(f"✅ {user_id} connected")
+
+                print(f"✅ {user_id} ONLINE")
                 print("ONLINE USERS:", list(connected_users.keys()))
+
+                # 🔥 UPDATE DB
+                set_status(user_id, "online")
 
                 await safe_send(websocket, {
                     "type": "status",
@@ -61,29 +95,30 @@ async def handler(websocket):
                 if not sender or not receiver or not msg:
                     continue
 
-                timestamp = now()
+                time = now()
 
                 print(f"📩 {sender} -> {receiver}: {msg}")
 
                 receiver_ws = connected_users.get(receiver)
 
+                # ---------------- IF ONLINE ----------------
                 if receiver_ws:
-                    # Deliver message if receiver is online
                     await safe_send(receiver_ws, {
                         "type": "message",
                         "from": sender,
                         "message": msg,
-                        "time": timestamp
+                        "time": time
                     })
-                    # Inform sender that message was delivered
+
                     await safe_send(websocket, {
                         "type": "status",
-                        "status": "delivered",
-                        "time": timestamp
+                        "status": "delivered"
                     })
+
+                # ---------------- IF OFFLINE ----------------
                 else:
                     print("❌ Receiver offline:", receiver)
-                    # Inform sender that receiver is offline
+
                     await safe_send(websocket, {
                         "type": "status",
                         "status": "offline"
@@ -103,17 +138,20 @@ async def handler(websocket):
                     })
 
     except Exception as e:
-        print("Error:", e)
+        print("Connection error:", e)
 
     finally:
+        # ---------------- CLEAN DISCONNECT ----------------
         if user_id:
-            await unregister(user_id)
+            mark_offline(user_id)
 
+
+# ---------------- SERVER START ----------------
 
 PORT = int(os.environ.get("PORT", 5000))
 
 async def main():
-    print("🚀 Server running on port", PORT)
+    print("🚀 WebSocket running on port", PORT)
 
     async with websockets.serve(
         handler,
