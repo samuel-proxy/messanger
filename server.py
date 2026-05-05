@@ -12,23 +12,23 @@ def now():
 async def safe_send(ws, data):
     try:
         await ws.send(json.dumps(data))
-    except:
-        pass
+    except Exception as e:
+        print("Send error:", e)
 
 async def unregister(user_id):
     if user_id in connected_users:
         del connected_users[user_id]
-        print(f"❌ {user_id} removed from connected users")
+        print(f"❌ {user_id} disconnected")
 
 async def handler(websocket):
     user_id = None
 
     try:
         async for message in websocket:
-
             try:
                 data = json.loads(message)
-            except:
+            except Exception as e:
+                print("JSON parse error:", e)
                 continue
 
             msg_type = data.get("type")
@@ -40,11 +40,10 @@ async def handler(websocket):
                 print("REGISTER RAW:", data)
 
                 if not user_id or user_id == "null":
-                    print("❌ Invalid register attempt")
+                    print("❌ Invalid user ID on register")
                     continue
 
                 connected_users[user_id] = websocket
-
                 print(f"✅ {user_id} connected")
                 print("ONLINE USERS:", list(connected_users.keys()))
 
@@ -69,13 +68,14 @@ async def handler(websocket):
                 receiver_ws = connected_users.get(receiver)
 
                 if receiver_ws:
+                    # Deliver message if receiver is online
                     await safe_send(receiver_ws, {
                         "type": "message",
                         "from": sender,
                         "message": msg,
                         "time": timestamp
                     })
-
+                    # Inform sender that message was delivered
                     await safe_send(websocket, {
                         "type": "status",
                         "status": "delivered",
@@ -83,7 +83,7 @@ async def handler(websocket):
                     })
                 else:
                     print("❌ Receiver offline:", receiver)
-
+                    # Inform sender that receiver is offline
                     await safe_send(websocket, {
                         "type": "status",
                         "status": "offline"
