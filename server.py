@@ -6,24 +6,34 @@ import urllib.request
 import urllib.parse
 from datetime import datetime
 
-connected_users = {}  # user_id -> websocket
+# ---------------- STATE ----------------
 
-PHP_BASE_URL = "https://onana.free.nf"  # 🔥 CHANGE THIS
+connected_users = {}   # user_id -> websocket
+debug_clients = set()  # websockets that receive debug logs
 
-# ---------------- TIME ----------------
+PHP_BASE_URL = "https://onana.free.nf"  # CHANGE THIS
 
-def now():
-    return datetime.utcnow().strftime("%H:%M:%S")
+# ---------------- LOGGING ----------------
 
-# ---------------- SAFE SEND ----------------
+def log(msg):
+    print("[SERVER]", msg)
 
-async def safe_send(ws, data):
-    try:
-        await ws.send(json.dumps(data))
-    except:
-        pass
+async def debug_broadcast(message):
+    """Send logs to frontend console"""
+    dead = set()
 
-# ---------------- PHP STATUS UPDATE (NO REQUESTS LIB) ----------------
+    for ws in debug_clients:
+        try:
+            await ws.send(json.dumps({
+                "type": "debug",
+                "message": message
+            }))
+        except:
+            dead.add(ws)
+
+    debug_clients.difference_update(dead)
+
+# ---------------- PHP STATUS UPDATE ----------------
 
 def update_status(user_id, status):
     try:
@@ -37,49 +47,75 @@ def update_status(user_id, status):
             data=data
         )
 
-        urllib.request.urlopen(req, timeout=3)
+        urllib.request.urlopen(req, timeout=2)
 
-        print(f"STATUS: {user_id} -> {status}")
+        log(f"DB UPDATE: {user_id} -> {status}")
 
     except Exception as e:
-        print("Status update error:", e)
+        log(f"PHP ERROR: {e}")
 
-# ---------------- USER DISCONNECT ----------------
+# ---------------- SAFE SEND ----------------
 
-def mark_offline(user_id):
-    if not user_id:
-        return
+async def safe_send(ws, data):
+    try:
+        await ws.send(json.dumps(data))
+    except Exception as e:
+        log(f"SEND FAIL: {e}")
 
-    connected_users.pop(user_id, None)
-    update_status(user_id, "offline")
-    print(f"❌ OFFLINE: {user_id}")
+# ---------------- CLEAN DISCONNECT ----------------
+
+def remove_user(user_id):
+    if user_id in connected_users:
+        del connected_users[user_id]
+        update_status(user_id, "offline")
+        log(f"OFFLINE: {user_id}")
 
 # ---------------- HANDLER ----------------
 
 async def handler(websocket):
+
     user_id = None
+    is_debug = False
+
+    await debug_broadcast("New connection attempt")
 
     try:
         async for message in websocket:
 
+            # ---------------- PARSE ----------------
             try:
                 data = json.loads(message)
             except:
+                await debug_broadcast("Invalid JSON received")
                 continue
 
             msg_type = data.get("type")
 
+            # ---------------- DEBUG MODE ----------------
+            if msg_type == "debug":
+                debug_clients.add(websocket)
+                is_debug = True
+                await safe_send(websocket, {
+                    "type": "debug",
+                    "message": "Debug mode enabled"
+                })
+                continue
+
             # ---------------- REGISTER ----------------
             if msg_type == "register":
+
                 user_id = str(data.get("user_id"))
 
                 if not user_id or user_id == "null":
+                    await debug_broadcast("Invalid user_id on register")
                     continue
 
                 connected_users[user_id] = websocket
 
-                print(f"✅ ONLINE: {user_id}")
-                print("USERS:", list(connected_users.keys()))
+                log(f"CONNECTED: {user_id}")
+                log(f"ONLINE USERS: {list(connected_users.keys())}")
+
+                await debug_broadcast(f"{user_id} connected")
 
                 update_status(user_id, "online")
 
@@ -90,14 +126,12 @@ async def handler(websocket):
 
             # ---------------- MESSAGE ----------------
             elif msg_type == "message":
+
                 sender = str(data.get("from_user_id"))
                 receiver = str(data.get("to_user_id"))
                 msg = data.get("message")
 
-                if not sender or not receiver or not msg:
-                    continue
-
-                time = now()
+                await debug_broadcast(f"MSG {sender} -> {receiver}: {msg}")
 
                 receiver_ws = connected_users.get(receiver)
 
@@ -105,14 +139,14 @@ async def handler(websocket):
                     await safe_send(receiver_ws, {
                         "type": "message",
                         "from": sender,
-                        "message": msg,
-                        "time": time
+                        "message": msg
                     })
 
                     await safe_send(websocket, {
                         "type": "status",
                         "status": "delivered"
                     })
+
                 else:
                     await safe_send(websocket, {
                         "type": "status",
@@ -121,6 +155,7 @@ async def handler(websocket):
 
             # ---------------- TYPING ----------------
             elif msg_type == "typing":
+
                 receiver = str(data.get("to_user_id"))
                 sender = str(data.get("from_user_id"))
 
@@ -131,25 +166,30 @@ async def handler(websocket):
                     })
 
     except Exception as e:
-        print("Connection error:", e)
+        log(f"ERROR: {e}")
+        await debug_broadcast(f"Server error: {e}")
 
     finally:
-        mark_offline(user_id)
+        if user_id:
+            remove_user(user_id)
+            await debug_broadcast(f"{user_id} disconnected")
 
 
-# ---------------- SERVER START ----------------
+# ---------------- START SERVER ----------------
 
 PORT = int(os.environ.get("PORT", 5000))
 
 async def main():
-    print("🚀 Server running on port", PORT)
+    log(f"Starting WebSocket server on {PORT}")
 
     async with websockets.serve(
         handler,
         "0.0.0.0",
         PORT,
         ping_interval=20,
-        ping_timeout=20
+        ping_timeout=20,
+        max_size=2**20,
+        compression=None
     ):
         await asyncio.Future()
 
